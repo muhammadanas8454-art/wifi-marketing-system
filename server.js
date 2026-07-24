@@ -2,6 +2,7 @@ const express = require('express');
 const { createClient } = require('@supabase/supabase-js');
 const app = express();
 
+// IMPORTANT: Add body parsing middleware
 app.use(express.urlencoded({ extended: true }));
 app.use(express.json());
 
@@ -11,19 +12,18 @@ const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || 'PASTE_YOUR_SUPABASE_ANON_
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
 console.log('🔗 Supabase URL:', SUPABASE_URL);
-console.log('🔑 Supabase Key:', SUPABASE_KEY ? '✅ Set' : '❌ Missing');
 
 // DASHBOARD PASSWORD
 const DASHBOARD_PASSWORD = 'restaurant123';
 
-// Profile inventory - with case-insensitive lookup
+// Profile inventory
 const venueProfiles = {
     "lisbon_brunch": {
         name: "Lisbon Brunch Co.",
         color: "#d4a373",
         logo: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100"
     },
-    "Lisbon_brunch": {  // Support both cases
+    "Lisbon_brunch": {
         name: "Lisbon Brunch Co.",
         color: "#d4a373",
         logo: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100"
@@ -40,14 +40,10 @@ const venueProfiles = {
     }
 };
 
-// Helper function to get venue profile (case-insensitive)
 function getVenueProfile(venueId) {
     if (!venueId) return { name: "Guest WiFi", color: "#333333", logo: "" };
-    // Try exact match first
     if (venueProfiles[venueId]) return venueProfiles[venueId];
-    // Try lowercase match
     if (venueProfiles[venueId.toLowerCase()]) return venueProfiles[venueId.toLowerCase()];
-    // Default
     return { name: venueId || "Guest WiFi", color: "#333333", logo: "" };
 }
 
@@ -71,6 +67,8 @@ app.get('/login', (req, res) => {
                 .logo { max-width: 100px; border-radius: 50%; margin-bottom: 15px; }
                 input[type="email"] { width: 90%; padding: 12px; margin: 15px 0; border: 1px solid #ccc; border-radius: 5px; font-size: 16px; box-sizing: border-box; }
                 button { width: 100%; padding: 12px; background: ${profile.color}; color: white; border: none; border-radius: 5px; font-size: 16px; cursor: pointer; font-weight: bold; }
+                .error { color: red; margin-top: 10px; }
+                .success { color: green; margin-top: 10px; }
             </style>
         </head>
         <body>
@@ -78,6 +76,9 @@ app.get('/login', (req, res) => {
                 ${profile.logo ? `<img class="logo" src="${profile.logo}">` : ''}
                 <h2>Welcome to ${profile.name}</h2>
                 <p>Connect to our high-speed guest network.</p>
+                
+                ${req.query.error ? `<p class="error">❌ ${req.query.error}</p>` : ''}
+                ${req.query.success ? `<p class="success">✅ ${req.query.success}</p>` : ''}
                 
                 <form action="/connect" method="POST">
                     <input type="hidden" name="mac" value="${userMac}">
@@ -93,32 +94,31 @@ app.get('/login', (req, res) => {
 });
 
 app.post('/connect', async (req, res) => {
+    console.log('[CONNECT] Full request body:', req.body);
+    console.log('[CONNECT] Headers:', req.headers['content-type']);
+    
     const { email, mac, loginlink, venue } = req.body;
 
-    console.log('[CONNECT] Received:', { email, mac, venue });
-
-    if (!email || email === 'undefined' || email === '') {
-        console.error('[ERROR] Invalid email:', email);
-        return res.send(`
-            <html>
-            <head><title>Error</title></head>
-            <body>
-                <p>Error: Email is required. Please go back.</p>
-                <a href="${loginlink || 'https://google.com'}">Continue</a>
-            </body>
-            </html>
-        `);
+    // Validate email
+    if (!email || email.trim() === '' || email === 'undefined' || email === 'null') {
+        console.error('[ERROR] Invalid email received:', email);
+        // Redirect back to login with error
+        return res.redirect(`/login?mac=${mac || ''}&venue=${venue || ''}&error=Please enter a valid email address`);
     }
 
+    const cleanEmail = email.trim();
+    const cleanMac = mac || 'unknown';
+    const normalizedVenue = venue ? venue.toLowerCase() : 'unknown';
+    const cleanLoginLink = loginlink || 'https://google.com';
+
     try {
-        // Normalize venue to lowercase for consistency
-        const normalizedVenue = venue ? venue.toLowerCase() : 'unknown';
+        console.log(`[CONNECT] Inserting: Email=${cleanEmail}, MAC=${cleanMac}, Venue=${normalizedVenue}`);
         
         const { data, error } = await supabase
             .from('wifi_logs')
             .insert([{ 
-                email: email, 
-                mac: mac || 'unknown', 
+                email: cleanEmail, 
+                mac: cleanMac, 
                 venue_id: normalizedVenue
             }])
             .select();
@@ -127,21 +127,49 @@ app.post('/connect', async (req, res) => {
             console.error('[DATABASE ERROR]', error);
             throw error;
         }
-        console.log(`[SUCCESS] Email ${email} logged to Supabase.`, data);
+        console.log(`[SUCCESS] Email ${cleanEmail} logged to Supabase.`, data);
     } catch (err) {
         console.error('[DATABASE ERROR]', err.message);
+        // Still redirect to internet, but log the error
     }
 
+    // Auto-submit to router for internet access
     res.send(`
+        <!DOCTYPE html>
         <html>
-        <head><title>Success</title></head>
-        <body onload="document.forms[0].submit()">
-            <p>Verifying access parameters, please wait...</p>
-            <form method="POST" action="${loginlink || 'https://google.com'}">
+        <head>
+            <title>Access Granted</title>
+            <meta http-equiv="refresh" content="3; url=${cleanLoginLink}">
+            <style>
+                body { font-family: Arial; text-align: center; padding: 50px; background: #f4f6f9; }
+                .box { background: white; padding: 30px; border-radius: 10px; max-width: 400px; margin: auto; }
+                .check { font-size: 60px; color: #28a745; }
+                .loading { display: inline-block; width: 20px; height: 20px; border: 3px solid #f3f3f3; border-top: 3px solid #0077b6; border-radius: 50%; animation: spin 1s linear infinite; }
+                @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+            </style>
+        </head>
+        <body>
+            <div class="box">
+                <div class="check">✅</div>
+                <h2>Access Granted!</h2>
+                <p>You are now connected to the internet.</p>
+                <p>Redirecting you now...</p>
+                <div class="loading"></div>
+                <p style="font-size: 12px; color: #999; margin-top: 20px;">
+                    <a href="${cleanLoginLink}">Click here if not redirected</a>
+                </p>
+            </div>
+            <form method="POST" action="${cleanLoginLink}" id="autoSubmit">
                 <input type="hidden" name="username" value="wifi_guest">
                 <input type="hidden" name="password" value="">
                 <input type="hidden" name="dst" value="https://google.com">
             </form>
+            <script>
+                // Auto-submit to router
+                setTimeout(() => {
+                    document.getElementById('autoSubmit').submit();
+                }, 1000);
+            </script>
         </body>
         </html>
     `);
@@ -150,19 +178,12 @@ app.post('/connect', async (req, res) => {
 // ==================== DEBUG ENDPOINT ====================
 app.get('/debug', async (req, res) => {
     try {
-        console.log('[DEBUG] Testing Supabase connection...');
-        
         const { count, error: countError } = await supabase
             .from('wifi_logs')
             .select('*', { count: 'exact', head: true });
 
         if (countError) {
-            console.error('[DEBUG] Count error:', countError);
-            return res.json({
-                success: false,
-                error: countError.message,
-                details: countError
-            });
+            return res.json({ success: false, error: countError.message });
         }
 
         const { data, error } = await supabase
@@ -172,32 +193,18 @@ app.get('/debug', async (req, res) => {
             .limit(5);
 
         if (error) {
-            console.error('[DEBUG] Query error:', error);
-            return res.json({
-                success: false,
-                error: error.message,
-                details: error
-            });
+            return res.json({ success: false, error: error.message });
         }
-
-        console.log(`[DEBUG] Found ${data?.length || 0} records`);
 
         res.json({
             success: true,
             total_count: count || 0,
             records_returned: data?.length || 0,
             data: data || [],
-            supabase_url: SUPABASE_URL,
-            table_name: 'wifi_logs',
             columns: data && data.length > 0 ? Object.keys(data[0]) : []
         });
     } catch (err) {
-        console.error('[DEBUG] Exception:', err);
-        res.json({
-            success: false,
-            error: err.message,
-            stack: err.stack
-        });
+        res.json({ success: false, error: err.message });
     }
 });
 
@@ -244,8 +251,6 @@ app.post('/dashboard/auth', (req, res) => {
 // ==================== DASHBOARD VIEW ====================
 app.get('/dashboard/view', async (req, res) => {
     try {
-        console.log('[DASHBOARD] Fetching fresh data from Supabase...');
-        
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.set('Pragma', 'no-cache');
         res.set('Expires', '0');
@@ -259,8 +264,6 @@ app.get('/dashboard/view', async (req, res) => {
             console.error('[DASHBOARD] Supabase error:', error);
             throw error;
         }
-
-        console.log(`[DASHBOARD] Found ${logs?.length || 0} total records`);
 
         const safeLogs = logs || [];
         const totalGuests = safeLogs.length;
@@ -441,7 +444,6 @@ app.get('/dashboard/view', async (req, res) => {
                 <h1>❌ Dashboard Error</h1>
                 <p>${err.message}</p>
                 <p><a href="/dashboard">← Back to Login</a></p>
-                <p style="color: #999; font-size: 12px;">Check Render logs for details</p>
             </body>
             </html>
         `);
