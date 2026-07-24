@@ -10,12 +10,20 @@ const SUPABASE_URL = process.env.SUPABASE_URL || 'PASTE_YOUR_SUPABASE_URL_HERE';
 const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || 'PASTE_YOUR_SUPABASE_ANON_PUBLIC_KEY_HERE';
 const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 
-// DASHBOARD PASSWORD - Change this!
+console.log('🔗 Supabase URL:', SUPABASE_URL);
+console.log('🔑 Supabase Key:', SUPABASE_KEY ? '✅ Set' : '❌ Missing');
+
+// DASHBOARD PASSWORD
 const DASHBOARD_PASSWORD = 'restaurant123';
 
-// Profile inventory to dynamically brand separate cafe locations
+// Profile inventory - with case-insensitive lookup
 const venueProfiles = {
     "lisbon_brunch": {
+        name: "Lisbon Brunch Co.",
+        color: "#d4a373",
+        logo: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100"
+    },
+    "Lisbon_brunch": {  // Support both cases
         name: "Lisbon Brunch Co.",
         color: "#d4a373",
         logo: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100"
@@ -32,13 +40,24 @@ const venueProfiles = {
     }
 };
 
+// Helper function to get venue profile (case-insensitive)
+function getVenueProfile(venueId) {
+    if (!venueId) return { name: "Guest WiFi", color: "#333333", logo: "" };
+    // Try exact match first
+    if (venueProfiles[venueId]) return venueProfiles[venueId];
+    // Try lowercase match
+    if (venueProfiles[venueId.toLowerCase()]) return venueProfiles[venueId.toLowerCase()];
+    // Default
+    return { name: venueId || "Guest WiFi", color: "#333333", logo: "" };
+}
+
 // ==================== CAPTIVE PORTAL ====================
 app.get('/login', (req, res) => {
     const userMac = req.query.mac || '';
     const loginLink = req.query.loginlink || '#';
     const venueId = req.query.venue || "default"; 
 
-    const profile = venueProfiles[venueId] || { name: "Guest WiFi", color: "#333333", logo: "" };
+    const profile = getVenueProfile(venueId);
 
     res.send(`
         <!DOCTYPE html>
@@ -76,13 +95,39 @@ app.get('/login', (req, res) => {
 app.post('/connect', async (req, res) => {
     const { email, mac, loginlink, venue } = req.body;
 
-    try {
-        const { error } = await supabase
-            .from('wifi_logs')
-            .insert([{ email: email, mac: mac, venue_id: venue }]);
+    console.log('[CONNECT] Received:', { email, mac, venue });
 
-        if (error) throw error;
-        console.log(`[SUCCESS] Email ${email} logged to Supabase.`);
+    if (!email || email === 'undefined' || email === '') {
+        console.error('[ERROR] Invalid email:', email);
+        return res.send(`
+            <html>
+            <head><title>Error</title></head>
+            <body>
+                <p>Error: Email is required. Please go back.</p>
+                <a href="${loginlink || 'https://google.com'}">Continue</a>
+            </body>
+            </html>
+        `);
+    }
+
+    try {
+        // Normalize venue to lowercase for consistency
+        const normalizedVenue = venue ? venue.toLowerCase() : 'unknown';
+        
+        const { data, error } = await supabase
+            .from('wifi_logs')
+            .insert([{ 
+                email: email, 
+                mac: mac || 'unknown', 
+                venue_id: normalizedVenue
+            }])
+            .select();
+
+        if (error) {
+            console.error('[DATABASE ERROR]', error);
+            throw error;
+        }
+        console.log(`[SUCCESS] Email ${email} logged to Supabase.`, data);
     } catch (err) {
         console.error('[DATABASE ERROR]', err.message);
     }
@@ -102,8 +147,61 @@ app.post('/connect', async (req, res) => {
     `);
 });
 
+// ==================== DEBUG ENDPOINT ====================
+app.get('/debug', async (req, res) => {
+    try {
+        console.log('[DEBUG] Testing Supabase connection...');
+        
+        const { count, error: countError } = await supabase
+            .from('wifi_logs')
+            .select('*', { count: 'exact', head: true });
+
+        if (countError) {
+            console.error('[DEBUG] Count error:', countError);
+            return res.json({
+                success: false,
+                error: countError.message,
+                details: countError
+            });
+        }
+
+        const { data, error } = await supabase
+            .from('wifi_logs')
+            .select('*')
+            .order('created_at', { ascending: false })
+            .limit(5);
+
+        if (error) {
+            console.error('[DEBUG] Query error:', error);
+            return res.json({
+                success: false,
+                error: error.message,
+                details: error
+            });
+        }
+
+        console.log(`[DEBUG] Found ${data?.length || 0} records`);
+
+        res.json({
+            success: true,
+            total_count: count || 0,
+            records_returned: data?.length || 0,
+            data: data || [],
+            supabase_url: SUPABASE_URL,
+            table_name: 'wifi_logs',
+            columns: data && data.length > 0 ? Object.keys(data[0]) : []
+        });
+    } catch (err) {
+        console.error('[DEBUG] Exception:', err);
+        res.json({
+            success: false,
+            error: err.message,
+            stack: err.stack
+        });
+    }
+});
+
 // ==================== DASHBOARD ====================
-// Login page for dashboard
 app.get('/dashboard', (req, res) => {
     res.send(`
         <!DOCTYPE html>
@@ -134,7 +232,6 @@ app.get('/dashboard', (req, res) => {
     `);
 });
 
-// Authenticate dashboard access
 app.post('/dashboard/auth', (req, res) => {
     const { password } = req.body;
     if (password === DASHBOARD_PASSWORD) {
@@ -144,17 +241,15 @@ app.post('/dashboard/auth', (req, res) => {
     }
 });
 
-// ==================== MAIN DASHBOARD VIEW - FIXED ====================
+// ==================== DASHBOARD VIEW ====================
 app.get('/dashboard/view', async (req, res) => {
     try {
         console.log('[DASHBOARD] Fetching fresh data from Supabase...');
         
-        // DISABLE CACHE - Force fresh data
         res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
         res.set('Pragma', 'no-cache');
         res.set('Expires', '0');
         
-        // Fetch ALL logs from Supabase
         const { data: logs, error } = await supabase
             .from('wifi_logs')
             .select('*')
@@ -165,46 +260,47 @@ app.get('/dashboard/view', async (req, res) => {
             throw error;
         }
 
-        console.log(`[DASHBOARD] Found ${logs.length} total records`);
+        console.log(`[DASHBOARD] Found ${logs?.length || 0} total records`);
 
-        // Calculate stats
-        const totalGuests = logs.length;
-        const uniqueMacs = new Set(logs.map(l => l.mac)).size;
+        const safeLogs = logs || [];
+        const totalGuests = safeLogs.length;
+        const uniqueMacs = new Set(safeLogs.map(l => l.mac).filter(Boolean)).size;
         
-        // Today's guests
         const today = new Date();
         today.setHours(0, 0, 0, 0);
-        const todayGuests = logs.filter(l => {
+        const todayGuests = safeLogs.filter(l => {
+            if (!l.created_at) return false;
             const logDate = new Date(l.created_at);
             logDate.setHours(0, 0, 0, 0);
             return logDate.getTime() === today.getTime();
         }).length;
 
-        // Last 7 days
         const weekAgo = new Date();
         weekAgo.setDate(weekAgo.getDate() - 7);
-        const weekGuests = logs.filter(l => new Date(l.created_at) >= weekAgo).length;
+        const weekGuests = safeLogs.filter(l => {
+            if (!l.created_at) return false;
+            return new Date(l.created_at) >= weekAgo;
+        }).length;
 
-        // Group by venue
         const venueStats = {};
-        logs.forEach(l => {
+        safeLogs.forEach(l => {
             const venue = l.venue_id || 'unknown';
             venueStats[venue] = (venueStats[venue] || 0) + 1;
         });
 
-        // Generate HTML
         let venueRows = '';
         for (const [venue, count] of Object.entries(venueStats)) {
-            const venueName = venueProfiles[venue]?.name || venue;
+            const profile = getVenueProfile(venue);
+            const venueName = profile.name || venue;
             venueRows += `<tr><td>${venueName}</td><td>${count}</td></tr>`;
         }
 
-        // Recent guests table
         let recentRows = '';
-        const recentLogs = logs.slice(0, 20);
+        const recentLogs = safeLogs.slice(0, 20);
         recentLogs.forEach(log => {
-            const date = new Date(log.created_at).toLocaleString();
-            const venueName = venueProfiles[log.venue_id]?.name || log.venue_id || 'Unknown';
+            const date = log.created_at ? new Date(log.created_at).toLocaleString() : 'Unknown';
+            const profile = getVenueProfile(log.venue_id);
+            const venueName = profile.name || log.venue_id || 'Unknown';
             recentRows += `
                 <tr>
                     <td>${date}</td>
@@ -246,6 +342,7 @@ app.get('/dashboard/view', async (req, res) => {
                     .refresh-btn { background: #0077b6; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; }
                     .countdown { color: #666; font-size: 12px; margin-top: 10px; }
                     .data-count { background: #e9ecef; padding: 2px 10px; border-radius: 12px; font-size: 12px; }
+                    .empty-state { text-align: center; padding: 40px; color: #999; }
                     @media (max-width: 600px) {
                         .header { flex-direction: column; align-items: stretch; }
                         .header-right { justify-content: space-between; }
@@ -295,6 +392,7 @@ app.get('/dashboard/view', async (req, res) => {
                 <div class="section">
                     <h2>📋 Recent Guest Activity <span class="data-count">${recentLogs.length} shown</span></h2>
                     <div style="overflow-x: auto;">
+                        ${recentLogs.length > 0 ? `
                         <table>
                             <thead>
                                 <tr>
@@ -304,8 +402,19 @@ app.get('/dashboard/view', async (req, res) => {
                                     <th>Venue</th>
                                 </tr>
                             </thead>
-                            <tbody>${recentRows || '<tr><td colspan="4">No guests yet</td></tr>'}</tbody>
+                            <tbody>${recentRows}</tbody>
                         </table>
+                        ` : `
+                        <div class="empty-state">
+                            <p>📭 No guest data yet</p>
+                            <p style="font-size: 12px;">Connect to the WiFi and submit your email to see data here</p>
+                            <p style="font-size: 12px; margin-top: 10px;">
+                                <a href="/login?mac=AA:BB:CC:11:22:33&venue=lisbon_brunch" target="_blank">
+                                    🧪 Test the portal
+                                </a>
+                            </p>
+                        </div>
+                        `}
                     </div>
                 </div>
 
@@ -315,16 +424,10 @@ app.get('/dashboard/view', async (req, res) => {
                     <small>🔍 Total records in database: ${totalGuests}</small>
                 </div>
 
-                <!-- Force no caching -->
                 <script>
-                    // Add timestamp to prevent caching
-                    console.log('Dashboard loaded at:', new Date().toISOString());
-                    console.log('Total records:', ${totalGuests});
-                    
-                    // Auto-refresh every 30 seconds
                     setTimeout(() => {
                         location.reload();
-                    }, 30000);
+                    }, 15000);
                 </script>
             </body>
             </html>
@@ -345,11 +448,14 @@ app.get('/dashboard/view', async (req, res) => {
     }
 });
 
-// Logout
 app.get('/dashboard/logout', (req, res) => {
     res.redirect('/dashboard');
 });
 
 // ==================== SERVER START ====================
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`WiFi Agency Server Online on port ${PORT}`));
+app.listen(PORT, () => {
+    console.log(`🚀 WiFi Agency Server Online on port ${PORT}`);
+    console.log(`📊 Dashboard: https://wifi-marketing-system.onrender.com/dashboard`);
+    console.log(`🐛 Debug: https://wifi-marketing-system.onrender.com/debug`);
+});
