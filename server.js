@@ -138,23 +138,34 @@ app.get('/dashboard', (req, res) => {
 app.post('/dashboard/auth', (req, res) => {
     const { password } = req.body;
     if (password === DASHBOARD_PASSWORD) {
-        // Set a simple cookie/session (in production, use proper session management)
         res.redirect('/dashboard/view');
     } else {
         res.redirect('/dashboard?error=1');
     }
 });
 
-// Main dashboard view
+// ==================== MAIN DASHBOARD VIEW - FIXED ====================
 app.get('/dashboard/view', async (req, res) => {
     try {
-        // Fetch all logs
+        console.log('[DASHBOARD] Fetching fresh data from Supabase...');
+        
+        // DISABLE CACHE - Force fresh data
+        res.set('Cache-Control', 'no-store, no-cache, must-revalidate, private');
+        res.set('Pragma', 'no-cache');
+        res.set('Expires', '0');
+        
+        // Fetch ALL logs from Supabase
         const { data: logs, error } = await supabase
             .from('wifi_logs')
             .select('*')
             .order('created_at', { ascending: false });
 
-        if (error) throw error;
+        if (error) {
+            console.error('[DASHBOARD] Supabase error:', error);
+            throw error;
+        }
+
+        console.log(`[DASHBOARD] Found ${logs.length} total records`);
 
         // Calculate stats
         const totalGuests = logs.length;
@@ -209,12 +220,18 @@ app.get('/dashboard/view', async (req, res) => {
             <html>
             <head>
                 <meta name="viewport" content="width=device-width, initial-scale=1.0">
+                <meta http-equiv="Cache-Control" content="no-cache, no-store, must-revalidate">
+                <meta http-equiv="Pragma" content="no-cache">
+                <meta http-equiv="Expires" content="0">
                 <title>Restaurant WiFi Dashboard</title>
                 <style>
                     * { box-sizing: border-box; margin: 0; padding: 0; }
                     body { font-family: Arial, sans-serif; background: #f0f2f5; padding: 20px; }
-                    .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; }
-                    .header h1 { color: #333; }
+                    .header { background: white; padding: 20px; border-radius: 10px; margin-bottom: 20px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); display: flex; justify-content: space-between; align-items: center; flex-wrap: wrap; gap: 10px; }
+                    .header h1 { color: #333; font-size: 24px; }
+                    .header-right { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+                    .badge { background: #28a745; color: white; padding: 5px 12px; border-radius: 20px; font-size: 12px; }
+                    .badge-warning { background: #ffc107; color: #333; padding: 5px 12px; border-radius: 20px; font-size: 12px; }
                     .logout-btn { background: #dc3545; color: white; padding: 10px 20px; border: none; border-radius: 5px; cursor: pointer; text-decoration: none; }
                     .stats-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 20px; margin-bottom: 20px; }
                     .stat-card { background: white; padding: 20px; border-radius: 10px; box-shadow: 0 2px 4px rgba(0,0,0,0.1); text-align: center; }
@@ -226,9 +243,12 @@ app.get('/dashboard/view', async (req, res) => {
                     th { background: #f8f9fa; padding: 12px; text-align: left; border-bottom: 2px solid #dee2e6; }
                     td { padding: 10px 12px; border-bottom: 1px solid #dee2e6; }
                     tr:hover { background: #f8f9fa; }
-                    .refresh-btn { background: #28a745; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; margin-left: 10px; }
+                    .refresh-btn { background: #0077b6; color: white; padding: 8px 16px; border: none; border-radius: 5px; cursor: pointer; }
+                    .countdown { color: #666; font-size: 12px; margin-top: 10px; }
+                    .data-count { background: #e9ecef; padding: 2px 10px; border-radius: 12px; font-size: 12px; }
                     @media (max-width: 600px) {
-                        .header { flex-direction: column; gap: 10px; }
+                        .header { flex-direction: column; align-items: stretch; }
+                        .header-right { justify-content: space-between; }
                         .stats-grid { grid-template-columns: 1fr 1fr; }
                         table { font-size: 12px; }
                     }
@@ -237,8 +257,10 @@ app.get('/dashboard/view', async (req, res) => {
             <body>
                 <div class="header">
                     <h1>📊 Restaurant WiFi Dashboard</h1>
-                    <div>
-                        <button onclick="location.reload()" class="refresh-btn">🔄 Refresh</button>
+                    <div class="header-right">
+                        <span class="badge">🔄 Live Data</span>
+                        <span class="badge-warning">📊 ${totalGuests} total</span>
+                        <button onclick="location.reload()" class="refresh-btn">🔄 Refresh Now</button>
                         <a href="/dashboard/logout" class="logout-btn">🚪 Logout</a>
                     </div>
                 </div>
@@ -271,7 +293,7 @@ app.get('/dashboard/view', async (req, res) => {
                 </div>
 
                 <div class="section">
-                    <h2>📋 Recent Guest Activity</h2>
+                    <h2>📋 Recent Guest Activity <span class="data-count">${recentLogs.length} shown</span></h2>
                     <div style="overflow-x: auto;">
                         <table>
                             <thead>
@@ -287,15 +309,39 @@ app.get('/dashboard/view', async (req, res) => {
                     </div>
                 </div>
 
-                <div style="text-align: center; color: #999; font-size: 12px; margin-top: 20px;">
-                    Last updated: ${new Date().toLocaleString()}
+                <div class="countdown">
+                    ⏱️ Data fetched directly from Supabase • Last updated: ${new Date().toLocaleString()}
+                    <br>
+                    <small>🔍 Total records in database: ${totalGuests}</small>
                 </div>
+
+                <!-- Force no caching -->
+                <script>
+                    // Add timestamp to prevent caching
+                    console.log('Dashboard loaded at:', new Date().toISOString());
+                    console.log('Total records:', ${totalGuests});
+                    
+                    // Auto-refresh every 30 seconds
+                    setTimeout(() => {
+                        location.reload();
+                    }, 30000);
+                </script>
             </body>
             </html>
         `);
     } catch (err) {
-        console.error('Dashboard error:', err);
-        res.status(500).send('Error loading dashboard');
+        console.error('[DASHBOARD] Error:', err);
+        res.status(500).send(`
+            <html>
+            <head><title>Dashboard Error</title></head>
+            <body style="font-family: Arial; padding: 50px; text-align: center;">
+                <h1>❌ Dashboard Error</h1>
+                <p>${err.message}</p>
+                <p><a href="/dashboard">← Back to Login</a></p>
+                <p style="color: #999; font-size: 12px;">Check Render logs for details</p>
+            </body>
+            </html>
+        `);
     }
 });
 
