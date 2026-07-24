@@ -12,7 +12,7 @@ const supabase = createClient(SUPABASE_URL, SUPABASE_KEY);
 // Profile inventory to dynamically brand separate cafe locations
 const venueProfiles = {
     "lisbon_brunch": {
-        name: "Lisbon Brunch Co.",
+        name: "Sharjah Brunch Co.",
         color: "#d4a373",
         logo: "https://images.unsplash.com/photo-1554118811-1e0d58224f24?w=100"
     },
